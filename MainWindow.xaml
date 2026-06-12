@@ -76,7 +76,7 @@
                       ToolTip="If the wallpaper doesn't react, make sure Wallpaper Engine's audio device is set to 'Default' in WE's settings."/>
         </DockPanel>
         <TextBlock Foreground="#FF6E6E85" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,14"
-                   Text="The song must play — the wallpaper reacts to real playback. To record in silence, pick an output you can't hear (e.g. a monitor without speakers); your device is restored when done. The video gets the original audio file either way."/>
+                   Text="The song must play — the wallpaper reacts to real playback. To record in silence, pick an output you can't hear (e.g. a monitor without speakers): your other apps keep playing where they are, and everything is restored when done. The video gets the original audio file either way."/>
 
         <!-- Quality settings -->
         <Expander Header="Quality settings" Foreground="#FFE8E8F0" IsExpanded="False" Margin="0,0,0,14">

@@ -39,6 +39,7 @@ You also need:
 ## Options
 
 - **Playback device selector** — the song must play for audio-reactive wallpapers to react, but it doesn't have to be heard: pick an output with nothing connected (e.g. a monitor's HDMI output) and the app temporarily makes it the system default, restoring yours when done. The switch happens *before* the wallpaper window opens, which is when WE hooks its audio capture. If the wallpaper doesn't react, set Wallpaper Engine's audio device to "Default" in WE's settings.
+- **Your audio keeps playing** — apps that are playing when the recording starts (Spotify, browser...) are automatically pinned to your real device (the same per-app routing as Windows' Volume mixer) so they aren't dragged to the silent output; the pins are removed when the recording ends.
 - **Hide the wallpaper window while recording** — keeps the recording window off-screen. If the result stutters or barely reacts to the music, untick it: some systems throttle the rendering of off-screen windows.
 - **Close the wallpaper window when finished** — uses Wallpaper Engine's own `closeWallpaper` command, so WE itself and your desktop wallpaper keep running.
 - **Encoder auto-detection** — on startup the app probes FFmpeg and preselects the best hardware encoder available (NVENC → Quick Sync → AMF), falling back to x264.

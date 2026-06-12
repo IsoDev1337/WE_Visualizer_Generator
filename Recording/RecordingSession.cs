@@ -38,6 +38,7 @@ public sealed class RecordingSession
         WindowCapture? capture = null;
         AudioPlayer? audio = null;
         DefaultAudioDeviceScope? audioRoute = null;
+        KeepAppsAudibleScope? keepApps = null;
         bool succeeded = false;
 
         try
@@ -48,6 +49,9 @@ public sealed class RecordingSession
             //    afterwards leaves the wallpaper listening to the old device (no reaction).
             if (settings.PlaybackDeviceId != null)
             {
+                // Pin the apps currently playing to the user's REAL device first, so
+                // they keep sounding there when the default flips to the silent one.
+                keepApps = new KeepAppsAudibleScope();
                 audioRoute = new DefaultAudioDeviceScope(settings.PlaybackDeviceId);
                 await Task.Delay(300, ct); // let Windows propagate the device change
             }
@@ -202,7 +206,8 @@ public sealed class RecordingSession
         {
             try { audio?.Stop(); } catch { }
             audio?.Dispose();
-            audioRoute?.Dispose(); // restore the user's default audio device
+            audioRoute?.Dispose(); // restore the user's default audio device...
+            keepApps?.Dispose();   // ...then release the pins (apps follow it again)
             capture?.Dispose();
             // Clean up the window on failure/cancel; on success, honor the user's choice.
             // Runs off the UI thread because it waits for WE to process the command.

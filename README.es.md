@@ -39,6 +39,7 @@ También necesitas:
 ## Opciones
 
 - **Selector de dispositivo de reproducción** — la canción debe sonar para que los wallpapers audio-reactivos reaccionen, pero no hace falta oírla: elige una salida sin nada conectado (p. ej. el HDMI del monitor) y la app la convierte temporalmente en predeterminada, restaurando la tuya al acabar. El cambio se hace *antes* de abrir la ventana del wallpaper, que es cuando WE engancha su captura de audio. Si el wallpaper no reacciona, pon el dispositivo de audio de Wallpaper Engine en "Predeterminado" en sus ajustes.
+- **Tu audio no se corta** — las apps que estén sonando al empezar la grabación (Spotify, navegador...) se fijan automáticamente a tu dispositivo real (el mismo enrutado por app del mezclador de volumen de Windows) para que no se vayan a la salida silenciosa; los pines se quitan al terminar.
 - **Ocultar la ventana del wallpaper durante la grabación** — mantiene la ventana fuera de pantalla. Si el resultado va a tirones o apenas reacciona a la música, desmárcala: algunos sistemas limitan el renderizado de ventanas fuera de pantalla.
 - **Cerrar la ventana del wallpaper al terminar** — usa el comando `closeWallpaper` del propio Wallpaper Engine, así WE y tu fondo de escritorio siguen funcionando.
 - **Detección automática de codificador** — al arrancar, la app prueba FFmpeg y preselecciona el mejor codificador por hardware disponible (NVENC → Quick Sync → AMF), con x264 como respaldo.
