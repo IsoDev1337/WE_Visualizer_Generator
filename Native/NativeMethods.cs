@@ -9,6 +9,7 @@ internal static class NativeMethods
     public const long WS_VISIBLE = 0x10000000L;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_FRAMECHANGED = 0x0020;
+    public const uint WM_CLOSE = 0x0010;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
@@ -20,6 +21,12 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
         int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
 
     // 1 ms timer resolution for Thread.Sleep: without it the frame clock has ~15 ms
     // of error per frame and the video comes out with micro-stutter.

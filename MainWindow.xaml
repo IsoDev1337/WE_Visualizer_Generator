@@ -6,7 +6,7 @@
         Width="620" SizeToContent="Height" ResizeMode="CanMinimize"
         Background="#FF15151B" Foreground="#FFE8E8F0"
         FontFamily="Segoe UI" FontSize="13"
-        Loaded="Window_Loaded">
+        Loaded="Window_Loaded" Closing="Window_Closing">
 
     <Window.Resources>
         <Style TargetType="{x:Type Button}">
@@ -70,11 +70,16 @@
             <Button DockPanel.Dock="Right" Content="Browse..." Margin="8,0,0,0" Click="BrowseAudio_Click"/>
             <TextBox x:Name="AudioPathBox" IsReadOnly="True"/>
         </DockPanel>
-        <CheckBox x:Name="PlayAudioCheck" IsChecked="True" Margin="0,2,0,4"
-                  Content="Play the song out loud while recording"
-                  ToolTip="Required for audio-reactive wallpapers — they only move to what is actually playing on your speakers. If your wallpaper doesn't react to music, untick this to record in silence."/>
+        <CheckBox x:Name="PlayAudioCheck" IsChecked="True" Margin="0,2,0,6"
+                  Content="Play the song while recording"
+                  ToolTip="Required for audio-reactive wallpapers — they only move to what is actually playing. If your wallpaper doesn't react to music, untick this to record in silence."/>
+        <DockPanel Margin="22,0,0,4" IsEnabled="{Binding IsChecked, ElementName=PlayAudioCheck}">
+            <TextBlock Text="Play on" Foreground="#FF9A9AB0" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <ComboBox x:Name="PlaybackDeviceCombo"
+                      ToolTip="Where the song plays during recording. Pick a device with nothing connected (e.g. your monitor's HDMI/digital output) to record WITHOUT hearing the music: the app temporarily routes sound there so the wallpaper still reacts, and restores your device when done."/>
+        </DockPanel>
         <TextBlock Foreground="#FF6E6E85" FontSize="11" TextWrapping="Wrap" Margin="22,0,0,14"
-                   Text="Audio-reactive wallpapers only 'hear' what actually plays, so the song must play. The video always gets the ORIGINAL file muxed in (exact same volume, never re-recorded) — what you hear and your Windows volume do not affect the result."/>
+                   Text="Audio-reactive wallpapers only 'hear' what actually plays, so the song must play somewhere. Silent recording: choose an output you can't hear (e.g. an HDMI/digital output with no speakers) — it temporarily becomes the system default and everything is restored afterwards. The video always gets the ORIGINAL file muxed in (exact volume, never re-recorded)."/>
 
         <!-- Quality settings -->
         <Expander Header="Quality settings" Foreground="#FFE8E8F0" IsExpanded="False" Margin="0,0,0,14">
@@ -110,7 +115,8 @@
 
                 <TextBlock Grid.Row="2" Text="Encoder" Style="{StaticResource FieldLabel}"/>
                 <ComboBox x:Name="EncoderCombo" Grid.Row="2" Grid.Column="1" Margin="0,0,0,10" SelectedIndex="0"
-                          ToolTip="The best encoder available on this PC is auto-selected at startup.">
+                          SelectionChanged="EncoderCombo_SelectionChanged"
+                          ToolTip="The best encoder available on this PC is auto-selected at startup. It is also verified at your chosen resolution before each recording, with automatic fallback to x264.">
                     <ComboBoxItem Content="x264 (CPU — best quality per bit)" Tag="X264"/>
                     <ComboBoxItem Content="H.264 NVENC (NVIDIA GPU)" Tag="Nvenc"/>
                     <ComboBoxItem Content="H.264 Quick Sync (Intel GPU)" Tag="Qsv"/>

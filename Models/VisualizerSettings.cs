@@ -28,12 +28,17 @@ public class VisualizerSettings
     /// (they react to what's actually playing); can be turned off for the rest.</summary>
     public bool PlayAudioDuringCapture { get; set; } = true;
 
+    /// <summary>Output device to play the song on (null = system default). Picking an
+    /// unused device (e.g. a monitor's HDMI output) allows silent recording: the app
+    /// temporarily makes it the system default so the wallpaper still "hears" it.</summary>
+    public string? PlaybackDeviceId { get; set; }
+
     /// <summary>Move the recording window off-screen so the user never sees it.
     /// Untick if the result stutters: some systems throttle off-screen windows.</summary>
     public bool HideCaptureWindow { get; set; } = true;
 
-    /// <summary>Close the recording window when done (via WE's own command;
-    /// Wallpaper Engine itself keeps running).</summary>
+    /// <summary>Close the recording window when done (the desktop wallpaper is
+    /// re-applied afterwards in case WE also stopped it).</summary>
     public bool CloseWindowWhenDone { get; set; } = true;
 
     /// <summary>The container follows the audio mode: MKV holds FLAC/MP3 without re-encoding.</summary>

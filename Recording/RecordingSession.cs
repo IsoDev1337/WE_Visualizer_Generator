@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using WEVisualizer.Capture;
@@ -17,6 +18,7 @@ public sealed class RecordingSession
 
     private WallpaperEngineInstall? _we;
     private IntPtr _hwnd;
+    private List<(int MonitorIndex, string ProjectJsonPath)> _desktopWallpapers = new();
 
     public async Task RunAsync(
         WallpaperEngineInstall we,
@@ -29,9 +31,13 @@ public sealed class RecordingSession
         CancellationToken ct)
     {
         _we = we;
+        // Snapshot what's on each monitor BEFORE touching anything, to restore it later.
+        _desktopWallpapers = WallpaperEngineLocator.GetCurrentWallpapers(we);
+
         using var ffmpeg = new FfmpegRecorder();
         WindowCapture? capture = null;
         AudioPlayer? audio = null;
+        DefaultAudioDeviceScope? audioRoute = null;
         bool succeeded = false;
 
         try
@@ -73,62 +79,113 @@ public sealed class RecordingSession
 
             // 4. The song's duration fixes the video's total frame count, so audio and
             //    video always end up exactly the same length.
-            audio = new AudioPlayer(audioPath);
+            audio = new AudioPlayer(audioPath,
+                settings.PlayAudioDuringCapture ? settings.PlaybackDeviceId : null);
             long totalFrames = (long)Math.Ceiling(audio.Duration.TotalSeconds * settings.Fps);
             ffmpeg.Start(ffmpegPath, settings, audioPath, outputPath, capture.Width, capture.Height);
 
-            byte[] frame = new byte[capture.Stride * capture.Height];
-            double frameMs = 1000.0 / settings.Fps;
+            // Bounded frame queue between the sampler (fixed cadence) and the writer
+            // (FFmpeg's stdin): brief encoder hiccups no longer disturb frame timing.
+            // Capacity is capped at ~64 MB so 4K doesn't eat RAM.
+            int frameBytes = capture.Stride * capture.Height;
+            int queueCapacity = Math.Clamp((int)(64L * 1024 * 1024 / frameBytes), 2, 8);
+            using var queue = new BlockingCollection<byte[]>(queueCapacity);
+            var spare = new ConcurrentBag<byte[]>(); // recycled buffers
 
             // 5. Audio and the video clock start at the same instant. Playback exists
             //    only so audio-reactive wallpapers can "hear" the music: the video gets
             //    the original file muxed in, never what comes out of the speakers.
-            if (settings.PlayAudioDuringCapture) audio.Play();
+            //    If the user picked another output device, it temporarily becomes the
+            //    system default (that's what WE listens to) — silent recording when
+            //    nothing is connected to it.
+            if (settings.PlayAudioDuringCapture)
+            {
+                if (settings.PlaybackDeviceId != null)
+                    audioRoute = new DefaultAudioDeviceScope(settings.PlaybackDeviceId);
+                audio.Play();
+            }
             var clock = Stopwatch.StartNew();
 
             NativeMethods.TimeBeginPeriod(1); // 1 ms clock: no cadence micro-stutter
+            using var pump = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Exception? writerError = null;
+
+            var writer = Task.Run(() =>
+            {
+                Thread.CurrentThread.Priority = ThreadPriority.AboveNormal;
+                try
+                {
+                    foreach (var buf in queue.GetConsumingEnumerable())
+                    {
+                        ffmpeg.WriteFrame(buf);
+                        spare.Add(buf);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    writerError = ex;
+                    pump.Cancel(); // unblock the sampler right away
+                }
+            });
+
             try
             {
                 await Task.Run(() =>
                 {
-                    bool behindWarned = false;
-                    for (long i = 0; i < totalFrames; i++)
+                    try
                     {
-                        ct.ThrowIfCancellationRequested();
+                        Thread.CurrentThread.Priority = ThreadPriority.Highest;
+                        var token = pump.Token;
+                        double frameMs = 1000.0 / settings.Fps;
+                        bool behindWarned = false;
 
-                        capture.TryCopyLatest(frame); // no new frame -> repeat the last one
-                        try
+                        for (long i = 0; i < totalFrames; i++)
                         {
-                            ffmpeg.WriteFrame(frame);
-                        }
-                        catch (IOException)
-                        {
-                            throw new InvalidOperationException("FFmpeg closed the pipe:\n" + ffmpeg.TailLog(15));
-                        }
+                            token.ThrowIfCancellationRequested();
 
-                        double aheadMs = (i + 1) * frameMs - clock.Elapsed.TotalMilliseconds;
+                            if (!spare.TryTake(out var buf)) buf = new byte[frameBytes];
+                            capture.TryCopyLatest(buf); // no new frame -> repeat the last one
+                            queue.Add(buf, token);      // blocks only if the encoder is truly saturated
 
-                        if (i % settings.Fps == 0)
-                        {
-                            var done = TimeSpan.FromSeconds(i / (double)settings.Fps);
-                            // If the encoder can't keep up the video will judder — warn.
-                            if (aheadMs < -1000) behindWarned = true;
-                            string warn = behindWarned
-                                ? "  ⚠ your PC can't keep up — try a GPU encoder or lower resolution/FPS"
-                                : "";
-                            progress.Report(((double)i / totalFrames,
-                                $"Recording... {done:mm\\:ss} / {audio.Duration:mm\\:ss}{warn}"));
+                            double aheadMs = (i + 1) * frameMs - clock.Elapsed.TotalMilliseconds;
+
+                            if (i % settings.Fps == 0)
+                            {
+                                var done = TimeSpan.FromSeconds(i / (double)settings.Fps);
+                                // If the encoder can't keep up the video will judder — warn.
+                                if (aheadMs < -1000) behindWarned = true;
+                                string warn = behindWarned
+                                    ? "  ⚠ your PC can't keep up — try a GPU encoder or lower resolution/FPS"
+                                    : "";
+                                progress.Report(((double)i / totalFrames,
+                                    $"Recording... {done:mm\\:ss} / {audio.Duration:mm\\:ss}{warn}"));
+                            }
+
+                            // Fixed cadence: sleep until the next frame's theoretical instant.
+                            if (aheadMs > 1) Thread.Sleep((int)aheadMs);
                         }
-
-                        // Fixed cadence: sleep until the next frame's theoretical instant.
-                        if (aheadMs > 1) Thread.Sleep((int)aheadMs);
                     }
-                }, ct);
+                    finally
+                    {
+                        queue.CompleteAdding(); // always lets the writer drain and finish
+                    }
+                }, CancellationToken.None);
+            }
+            catch (OperationCanceledException)
+            {
+                // Either the user canceled or the writer faulted — resolved below.
             }
             finally
             {
                 NativeMethods.TimeEndPeriod(1);
             }
+
+            await writer;
+            ct.ThrowIfCancellationRequested(); // user cancellation wins
+            if (writerError != null)
+                throw writerError as IOException != null
+                    ? new InvalidOperationException("FFmpeg closed the pipe:\n" + ffmpeg.TailLog(15))
+                    : writerError;
 
             // 6. Closing stdin makes FFmpeg finalize the container; -shortest trims to the audio.
             progress.Report((1, "Finalizing file..."));
@@ -144,20 +201,36 @@ public sealed class RecordingSession
         {
             try { audio?.Stop(); } catch { }
             audio?.Dispose();
+            audioRoute?.Dispose(); // restore the user's default audio device
             capture?.Dispose();
             // Clean up the window on failure/cancel; on success, honor the user's choice.
-            if (!succeeded || settings.CloseWindowWhenDone) CloseCaptureWindow();
+            // Runs off the UI thread because it waits for WE to process the command.
+            if (!succeeded || settings.CloseWindowWhenDone)
+                await Task.Run(CloseWindowAndRestoreDesktop);
         }
     }
 
     /// <summary>
-    /// Closes only the recording window via Wallpaper Engine's own command:
-    /// WE itself and the desktop wallpaper keep running untouched.
+    /// Closes the recording window and re-applies the desktop wallpaper each monitor
+    /// had before: some WE versions also stop the desktop wallpaper when a windowed
+    /// one is closed, which would leave the user staring at a plain background.
     /// </summary>
-    private void CloseCaptureWindow()
+    private void CloseWindowAndRestoreDesktop()
     {
         if (_we == null) return;
+
+        // 1) WE's own command for the named window.
         try { RunWeCommand(_we, $"-control closeWallpaper -playInWindow \"{CaptureWindowTitle}\""); } catch { }
+
+        // 2) If it survived, close just that window (precise target, nothing else).
+        for (int i = 0; i < 15 && _hwnd != IntPtr.Zero && NativeMethods.IsWindow(_hwnd); i++)
+            Thread.Sleep(100);
+        if (_hwnd != IntPtr.Zero && NativeMethods.IsWindow(_hwnd))
+            try { NativeMethods.PostMessage(_hwnd, NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero); } catch { }
+
+        // 3) Put back what each monitor had, so the desktop ends up exactly as it was.
+        foreach (var (monitor, project) in _desktopWallpapers)
+            try { RunWeCommand(_we, $"-control openWallpaper -file \"{project}\" -monitor {monitor}"); } catch { }
     }
 
     private static void RunWeCommand(WallpaperEngineInstall we, string arguments)

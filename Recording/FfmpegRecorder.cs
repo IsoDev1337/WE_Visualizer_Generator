@@ -40,24 +40,30 @@ public sealed class FfmpegRecorder : IDisposable
     /// </summary>
     public static async Task<VideoEncoder> DetectBestEncoderAsync(string ffmpegPath)
     {
-        foreach (var (encoder, codec) in new[]
+        foreach (var encoder in new[] { VideoEncoder.Nvenc, VideoEncoder.Qsv, VideoEncoder.Amf })
         {
-            (VideoEncoder.Nvenc, "h264_nvenc"),
-            (VideoEncoder.Qsv, "h264_qsv"),
-            (VideoEncoder.Amf, "h264_amf")
-        })
-        {
-            if (await CanEncodeAsync(ffmpegPath, codec)) return encoder;
+            if (await CanEncodeAsync(ffmpegPath, encoder, 1920, 1080)) return encoder;
         }
         return VideoEncoder.X264; // always available
     }
 
-    private static async Task<bool> CanEncodeAsync(string ffmpegPath, string codec)
+    /// <summary>
+    /// Verifies an encoder works at a specific resolution (some GPUs reject 4K, for
+    /// example) by encoding two synthetic frames. x264 always works.
+    /// </summary>
+    public static async Task<bool> CanEncodeAsync(string ffmpegPath, VideoEncoder encoder, int width, int height)
     {
+        if (encoder == VideoEncoder.X264) return true;
+        string codec = encoder switch
+        {
+            VideoEncoder.Nvenc => "h264_nvenc",
+            VideoEncoder.Qsv => "h264_qsv",
+            _ => "h264_amf"
+        };
         try
         {
             using var p = Process.Start(new ProcessStartInfo(ffmpegPath,
-                $"-hide_banner -loglevel error -f lavfi -i color=black:s=256x256:r=30:d=0.1 " +
+                $"-hide_banner -loglevel error -f lavfi -i color=black:s={width}x{height}:r=30:d=0.1 " +
                 $"-c:v {codec} -frames:v 2 -f null -")
             {
                 UseShellExecute = false,

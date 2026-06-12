@@ -51,39 +51,56 @@ public static class WallpaperEngineLocator
             yield return m.Groups[1].Value.Replace("\\\\", "\\");
     }
 
-    /// <summary>
-    /// Returns the active wallpaper's project.json. The exact config.json schema varies
-    /// across WE versions, so "selectedwallpapers" → "file" is searched recursively.
-    /// </summary>
+    /// <summary>Returns the active wallpaper's project.json (first monitor's).</summary>
     public static string? FindActiveProjectJson(WallpaperEngineInstall install)
+        => GetCurrentWallpapers(install).FirstOrDefault().ProjectJsonPath;
+
+    /// <summary>
+    /// Current wallpaper per monitor, from WE's config.json. The schema varies across
+    /// versions, so "selectedwallpapers" → "MonitorN" → "file" is searched recursively —
+    /// but the "wallpaperconfigrecent" history block is skipped so only what is actually
+    /// on screen right now is returned. Used to restore the desktop after recording.
+    /// </summary>
+    public static List<(int MonitorIndex, string ProjectJsonPath)> GetCurrentWallpapers(WallpaperEngineInstall install)
     {
+        var result = new List<(int, string)>();
         try
         {
-            if (!File.Exists(install.ConfigPath)) return null;
+            if (!File.Exists(install.ConfigPath)) return result;
             using var doc = JsonDocument.Parse(File.ReadAllText(install.ConfigPath));
-            var found = new List<string>();
-            Walk(doc.RootElement, found);
-            // The config points at the scene file (scene.pkg, .mp4, index.html...);
-            // the project.json with title/preview/type always sits next to it.
-            return found
-                .Select(f => f.EndsWith("project.json", StringComparison.OrdinalIgnoreCase)
-                    ? f
-                    : Path.Combine(Path.GetDirectoryName(f) ?? "", "project.json"))
-                .FirstOrDefault(File.Exists);
+            var entries = new List<(string Monitor, string File)>();
+            Walk(doc.RootElement, entries);
+
+            foreach (var (monitor, file) in entries)
+            {
+                // The config points at the scene file (scene.pkg, .mp4, index.html...);
+                // the project.json with title/preview/type always sits next to it.
+                var project = file.EndsWith("project.json", StringComparison.OrdinalIgnoreCase)
+                    ? file
+                    : Path.Combine(Path.GetDirectoryName(file) ?? "", "project.json");
+                if (!File.Exists(project)) continue;
+
+                var digits = new string(monitor.Where(char.IsDigit).ToArray());
+                int index = int.TryParse(digits, out var n) ? n : 0;
+                if (!result.Any(r => r.Item1 == index))
+                    result.Add((index, project));
+            }
         }
-        catch
-        {
-            return null;
-        }
+        catch { /* unreadable config → empty list */ }
+        return result;
     }
 
-    private static void Walk(JsonElement element, List<string> results)
+    private static void Walk(JsonElement element, List<(string Monitor, string File)> results)
     {
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
                 foreach (var prop in element.EnumerateObject())
                 {
+                    // Skip the recently-used history: it holds wallpapers that are NOT on screen.
+                    if (prop.Name.Equals("wallpaperconfigrecent", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     if (prop.Name.Equals("selectedwallpapers", StringComparison.OrdinalIgnoreCase)
                         && prop.Value.ValueKind == JsonValueKind.Object)
                     {
@@ -92,7 +109,7 @@ public static class WallpaperEngineLocator
                             if (monitor.Value.ValueKind == JsonValueKind.Object
                                 && monitor.Value.TryGetProperty("file", out var file)
                                 && file.ValueKind == JsonValueKind.String)
-                                results.Add(file.GetString()!);
+                                results.Add((monitor.Name, file.GetString()!));
                     }
                     Walk(prop.Value, results);
                 }

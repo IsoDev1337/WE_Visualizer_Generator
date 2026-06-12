@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
+using NAudio.CoreAudioApi;
 using WEVisualizer.Capture;
 using WEVisualizer.Models;
 using WEVisualizer.Recording;
@@ -16,6 +18,9 @@ public partial class MainWindow : Window
     private WallpaperInfo? _wallpaper;
     private string? _ffmpegPath;
     private CancellationTokenSource? _cts;
+    private UserPrefs _prefs = new();
+    private bool _applyingPrefs;     // suppresses SelectionChanged while loading prefs
+    private bool _encoderUserSet;    // true once the user (or saved prefs) picked an encoder
 
     public MainWindow() => InitializeComponent();
 
@@ -28,10 +33,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        PopulatePlaybackDevices();
+        ApplyPrefs(UserPrefs.Load());
+
         _ffmpegPath = FfmpegRecorder.FindFfmpeg();
         if (_ffmpegPath == null)
             StatusText.Text = "⚠ ffmpeg.exe not found. Place it next to this executable or add it to PATH.";
-        else
+        else if (!_encoderUserSet)
             _ = SelectBestEncoderAsync(_ffmpegPath);
 
         // Auto-detection on startup: WE install and active wallpaper.
@@ -49,9 +57,88 @@ public partial class MainWindow : Window
             SetWallpaper(WallpaperEngineLocator.ReadProjectInfo(project));
         else
             WallpaperTitleText.Text = "Couldn't detect the active wallpaper — pick it manually.";
-
-        OutputDirBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
     }
+
+    private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e) => SavePrefs();
+
+    // ---- Preferences ----------------------------------------------------------
+
+    private void PopulatePlaybackDevices()
+    {
+        PlaybackDeviceCombo.Items.Add(new ComboBoxItem
+        {
+            Content = "System default (you'll hear the song)",
+            Tag = null
+        });
+        try
+        {
+            using var devices = new MMDeviceEnumerator();
+            foreach (var device in devices.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+                PlaybackDeviceCombo.Items.Add(new ComboBoxItem { Content = device.FriendlyName, Tag = device.ID });
+        }
+        catch { /* enumeration failure → default only */ }
+        PlaybackDeviceCombo.SelectedIndex = 0;
+    }
+
+    private void ApplyPrefs(UserPrefs prefs)
+    {
+        _prefs = prefs;
+        _applyingPrefs = true;
+        try
+        {
+            if (prefs.OutputDirectory != null && Directory.Exists(prefs.OutputDirectory))
+                OutputDirBox.Text = prefs.OutputDirectory;
+            else
+                OutputDirBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+
+            SelectIndex(ResolutionCombo, prefs.ResolutionIndex);
+            SelectIndex(FpsCombo, prefs.FpsIndex);
+            if (prefs.EncoderIndex >= 0)
+            {
+                SelectIndex(EncoderCombo, prefs.EncoderIndex);
+                _encoderUserSet = true;
+            }
+            QualitySlider.Value = Math.Clamp(prefs.Quality, (int)QualitySlider.Minimum, (int)QualitySlider.Maximum);
+            SelectIndex(AudioModeCombo, prefs.AudioModeIndex);
+            PlayAudioCheck.IsChecked = prefs.PlayAudio;
+            HideWindowCheck.IsChecked = prefs.HideWindow;
+            CloseWindowCheck.IsChecked = prefs.CloseWindow;
+
+            if (prefs.PlaybackDeviceId != null)
+                foreach (ComboBoxItem item in PlaybackDeviceCombo.Items)
+                    if (Equals(item.Tag, prefs.PlaybackDeviceId))
+                    {
+                        PlaybackDeviceCombo.SelectedItem = item;
+                        break; // device gone since last run → stays on default
+                    }
+        }
+        finally
+        {
+            _applyingPrefs = false;
+        }
+    }
+
+    private static void SelectIndex(ComboBox combo, int index)
+    {
+        if (index >= 0 && index < combo.Items.Count) combo.SelectedIndex = index;
+    }
+
+    private void SavePrefs()
+    {
+        _prefs.OutputDirectory = OutputDirBox.Text;
+        _prefs.ResolutionIndex = ResolutionCombo.SelectedIndex;
+        _prefs.FpsIndex = FpsCombo.SelectedIndex;
+        _prefs.EncoderIndex = _encoderUserSet ? EncoderCombo.SelectedIndex : -1; // -1 keeps auto-detect
+        _prefs.Quality = (int)QualitySlider.Value;
+        _prefs.AudioModeIndex = AudioModeCombo.SelectedIndex;
+        _prefs.PlayAudio = PlayAudioCheck.IsChecked == true;
+        _prefs.PlaybackDeviceId = (PlaybackDeviceCombo.SelectedItem as ComboBoxItem)?.Tag as string;
+        _prefs.HideWindow = HideWindowCheck.IsChecked == true;
+        _prefs.CloseWindow = CloseWindowCheck.IsChecked == true;
+        _prefs.Save();
+    }
+
+    // ---- Encoder auto-detection ------------------------------------------------
 
     /// <summary>Probes ffmpeg for GPU encoders and preselects the best one available.</summary>
     private async Task SelectBestEncoderAsync(string ffmpegPath)
@@ -59,16 +146,27 @@ public partial class MainWindow : Window
         try
         {
             var best = await FfmpegRecorder.DetectBestEncoderAsync(ffmpegPath);
-            if (best != VideoEncoder.X264 && _cts == null) // don't touch settings mid-recording
+            if (best != VideoEncoder.X264 && _cts == null && !_encoderUserSet)
+            {
+                _applyingPrefs = true;
                 EncoderCombo.SelectedIndex = best switch
                 {
                     VideoEncoder.Nvenc => 1,
                     VideoEncoder.Qsv => 2,
                     _ => 3
                 };
+                _applyingPrefs = false;
+            }
         }
         catch { /* probing is best-effort; x264 always works */ }
     }
+
+    private void EncoderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_applyingPrefs && IsLoaded) _encoderUserSet = true;
+    }
+
+    // ---- Wallpaper / file pickers ----------------------------------------------
 
     private void SetWallpaper(WallpaperInfo info)
     {
@@ -126,8 +224,12 @@ public partial class MainWindow : Window
 
     private void BrowseOutput_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFolderDialog { Title = "Folder to save the video in" };
-        if (dlg.ShowDialog() == true) OutputDirBox.Text = dlg.FolderName;
+        var dlg = new OpenFolderDialog { Title = "Folder to save videos in (remembered as default)" };
+        if (dlg.ShowDialog() == true)
+        {
+            OutputDirBox.Text = dlg.FolderName;
+            SavePrefs(); // becomes the default export folder from now on
+        }
     }
 
     private void QualitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -151,10 +253,13 @@ public partial class MainWindow : Window
             AudioMode = Enum.Parse<AudioMode>(((ComboBoxItem)AudioModeCombo.SelectedItem).Tag!.ToString()!),
             OutputDirectory = OutputDirBox.Text,
             PlayAudioDuringCapture = PlayAudioCheck.IsChecked == true,
+            PlaybackDeviceId = (PlaybackDeviceCombo.SelectedItem as ComboBoxItem)?.Tag as string,
             HideCaptureWindow = HideWindowCheck.IsChecked == true,
             CloseWindowWhenDone = CloseWindowCheck.IsChecked == true
         };
     }
+
+    // ---- Recording ---------------------------------------------------------------
 
     private async void Generate_Click(object sender, RoutedEventArgs e)
     {
@@ -167,6 +272,8 @@ public partial class MainWindow : Window
         if (_ffmpegPath == null) { MessageBox.Show("ffmpeg.exe not found (place it next to the executable or on PATH)."); return; }
 
         var settings = ReadSettings();
+        SavePrefs(); // remember the user's choices for next time
+
         string outName = $"{Sanitize(_wallpaper.Title)} - {Sanitize(Path.GetFileNameWithoutExtension(AudioPathBox.Text))}{settings.ContainerExtension}";
         string outputPath = UniquePath(Path.Combine(settings.OutputDirectory, outName));
 
@@ -182,13 +289,28 @@ public partial class MainWindow : Window
 
         try
         {
+            // Preflight: confirm the chosen encoder works at this exact resolution
+            // (some GPUs reject 4K, old drivers fail, etc.) — fall back to x264.
+            if (settings.Encoder != VideoEncoder.X264)
+            {
+                StatusText.Text = "Checking encoder...";
+                if (!await FfmpegRecorder.CanEncodeAsync(_ffmpegPath, settings.Encoder, settings.Width, settings.Height))
+                {
+                    settings.Encoder = VideoEncoder.X264;
+                    StatusText.Text = $"⚠ The selected GPU encoder failed at {settings.Width}×{settings.Height} — using x264 instead.";
+                }
+            }
+
             await new RecordingSession().RunAsync(
                 _install, _wallpaper.ProjectJsonPath, AudioPathBox.Text,
                 settings, _ffmpegPath, outputPath, progress, _cts.Token);
 
             StatusText.Text = $"✔ Exported: {outputPath}";
-            MessageBox.Show($"The video was exported successfully:\n\n{outputPath}",
-                "WE Visualizer", MessageBoxButton.OK, MessageBoxImage.Information);
+            var open = MessageBox.Show(
+                $"Video exported successfully:\n\n{Path.GetFileName(outputPath)}\n\nOpen the output folder?",
+                "WE Visualizer", MessageBoxButton.YesNo, MessageBoxImage.Information);
+            if (open == MessageBoxResult.Yes)
+                Process.Start("explorer.exe", $"/select,\"{outputPath}\"");
         }
         catch (OperationCanceledException)
         {
@@ -212,7 +334,7 @@ public partial class MainWindow : Window
 
     private void SetInputsEnabled(bool enabled)
     {
-        foreach (var c in new Control[] { ResolutionCombo, FpsCombo, EncoderCombo, AudioModeCombo })
+        foreach (var c in new Control[] { ResolutionCombo, FpsCombo, EncoderCombo, AudioModeCombo, PlaybackDeviceCombo })
             c.IsEnabled = enabled;
         QualitySlider.IsEnabled = enabled;
         AudioPathBox.IsEnabled = enabled;
